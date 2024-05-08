@@ -4,26 +4,17 @@ package main
 import (
 	"errors"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
 
-	"github.com/qri-io/starlib"
+	"github.com/datadata-team/dataframes/dataframe"
 	"github.com/sirupsen/logrus"
-	"go.starlark.net/resolve"
 	"go.starlark.net/starlark"
+	"go.starlark.net/syntax"
 )
 
 var log = logrus.New()
-
-func init() {
-	// hoist execution settings to resolve package settings
-	resolve.AllowFloat = true
-	resolve.AllowSet = true
-	resolve.AllowLambda = true
-	resolve.AllowNestedDef = true
-}
 
 func main() {
 	port := os.Getenv("PORT")
@@ -64,12 +55,12 @@ func HomeHandler(w http.ResponseWriter, r *http.Request) {
 // ExecHandler assumes the request body is a starlark script to be executed
 // currently no loader is provided, so all code must be defined inline
 // errors are reported via HTTP response codes:
-//   * 400: script errors
-//   * 500: internal errors
+//   - 400: script errors
+//   - 500: internal errors
 func ExecHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
-	f, err := ioutil.TempFile("", "exec_starlark")
+	f, err := os.CreateTemp("", "exec_starlark")
 	if err != nil {
 		log.Error(err.Error())
 		writeError(w, http.StatusInternalServerError, err)
@@ -89,16 +80,33 @@ func ExecHandler(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(msg))
 			wrote = true
 		},
-		Load: starlib.Loader,
 	}
 
-	if _, err = starlark.ExecFile(thread, f.Name(), nil, nil); err != nil {
+	predeclared := starlark.StringDict{}
+	for key, val := range dataframe.Module.Members {
+		predeclared[key] = val
+	}
+
+	_, err = starlark.ExecFileOptions(
+		&syntax.FileOptions{
+			Set:             true,
+			While:           true,
+			Recursion:       true,
+			GlobalReassign:  true,
+			TopLevelControl: true,
+		},
+		thread,
+		f.Name(),
+		nil,
+		predeclared,
+	)
+	if err != nil {
 		msg := strings.Replace(err.Error(), f.Name(), "line", 1)
 		writeError(w, http.StatusBadRequest, errors.New(msg))
 		return
 	}
 
-	if wrote == false {
+	if !wrote {
 		w.Write([]byte("(no output)"))
 	}
 }
@@ -123,7 +131,7 @@ const tmpl = `<!DOCTYPE html>
 		}
 		html, body {
 			height: 100%;
-			margin: 0; 
+			margin: 0;
 			padding: 0;
 			font-family: "avenir-next", helvetica, sans-serif;
 			display: flex;
@@ -165,6 +173,7 @@ const tmpl = `<!DOCTYPE html>
 			overflow-y: auto;
 			background: #f2f2f2;
 			font-family: monospace;
+			white-space: pre;
 		}
 		.error { color: red; }
 	</style>
